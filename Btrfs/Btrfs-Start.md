@@ -32,7 +32,7 @@ One thing that Btrfs does not manage itself is encryption. However this can easi
 
 ---
 ## Where to start?
-A good start is the aforementioned [Btrfs-Wiki](https://btrfs.wiki.kernel.org/index.php/Main_Page), the [Arch-Wiki Page](https://wiki.archlinux.org/index.php/Btrfs) or the [Ubuntu Documentation](https://help.ubuntu.com/community/btrfs).\
+A good start is the aforementioned [Btrfs-Wiki](https://btrfs.wiki.kernel.org/index.php/Main_Page) and for a more practical guide the [Arch-Wiki Page](https://wiki.archlinux.org/index.php/Btrfs).
 For getting a good overview the [SysadminGuide](https://btrfs.wiki.kernel.org/index.php/SysadminGuide) is a great start.
 And hopefully this article.
 
@@ -102,7 +102,7 @@ This could arise in nested layouts, as snapshots may be visible to other users.
 
 ---
 After all this theoretical background lets get a bit more practical.
-# What did I do?
+# What did I do? - Exploration Phase
 I installed Fedora 34 on a 500GB NVME-SSD on my desktop.
 As I wanted to get going asap I chose to nuke and pave over my previous install and use the automatic partitioning.
 What this then created was a layout that looks as follows:
@@ -118,6 +118,7 @@ So we have a `/boot/efi`-partition that is a vfat formatted, a `/boot` partition
 Now this is just a vague overview. When checking the [fedoraproject wiki](https://fedoraproject.org/wiki/Btrfs) and/or the fstab we find out that the default layout of the Btrfs-pool is two subvolumes, one for `/`(root) and one for `/home`.\
 More information can be gathered via the `btrfs` command in the terminal.
 ## The `btrfs`-commands
+In this part I lean heavily on the man-pages.
 ### `btrfs filesystem`
 As an example here is the default `btrfs filesystem show output`:
 ```
@@ -178,13 +179,102 @@ The `<size>` parameter specifies the new size of the filesystem. With prefixes (
 If the maximum available is passed the filesystem will occupy all the available space on the device. Growing is usually instantaneous, but shrinking can take a long time if there is a lot of data on the device, as the relocation of any data that is already written beyond the newly set limit needs to be relocated.\
 **The resize command does not resize the underlying partition!** To do so you must use different tools such as `fdisk` or `parted`.
 
-## `btrfs subvolume`
-To list all subvolumes simply enter `btrfs subvolume list <path>`:
+### `btrfs subvolume`
+The `btrfs subvolume` command is the command that is used to manage your subvolumes and snapshots.
+
+To list all subvolumes in a path simply enter `btrfs subvolume list <path>`:
 ```
 ID 256 gen 19607 top level 5 path home
 ID 257 gen 19602 top level 5 path root
 ID 262 gen 18936 top level 257 path var/lib/machines
 ```
-The `ID` is the subvolume-id, `gen` is a counter that is updated with every transaction. `top level` represents the id of the parent subvolume and `path` is the relative path of the subvolume to the top level subvolume.
+The `ID` is the subvolume-id, `gen` is a counter that is updated with every transaction. `top level` represents the id of the parent subvolume (5 is the topmost level) and `path` is the relative path of the subvolume to the top level subvolume.
 
-Other interesting parameters to give to the 
+Here we see that the default Fedora-Install sets up three subvolumes in a mixed layout, where root and home are in a *flat* layout and the `var/lib/machines` subvolume is nested within the `home`. 
+This subvolume is created by SystemD for use as a backend for [`machinectl`](https://www.freedesktop.org/software/systemd/man/machinectl.html).
+
+More commands that are of note in this command:
+- `btrfs subvolume create` - is used to create a new subvolume.\
+  Either it is given with a destination or the subvolume is created in the current directory.\
+  The subvolume can also be addded to a quota-group via `-i <qgroupid>`
+- `btrfs subvolume delete` is used to delete subvolumes and snapshots.\
+  The deleted subvolume-directory is removed instantly, but the data-blocks are removed later in the background.
+- `btrfs subvolume show` shows more detailed information about a subvolume such as its UUID, Creation time, Subvolume ID and Name.
+- `btrfs subvolume snapshot` is used to create a snapshot of a subvolume.
+
+### `btrfs quota`
+The commands under `btrfs quota` are used to change the quotas of the filesystem.\
+According to the manpage there might be some edge-cases where quotas may lead to instability.
+In addition there are some performance implications to enabling quotas, so the activation is not recommended unless the user wants to use them.
+
+These quotas are really useful in resource allocation in multi-user environment.
+For a more detailed description the man-page of `btrfs-quota` is an excellent resource.
+On a single-user machine such as my install qgroups can be used as a replacement for partitions, so you can determine how much space a given subvolume should contain.
+This can be useful for restricting subvolumes to avoid them taking over the entire filesystem.
+For example in case of logfiles that might get very big or if creating software that might get a bit overly excited and create loads of data.\
+Setting and adjusting group quotas is done with the `btrfs qgroup` command.
+
+For my install I did not (yet) find a use for implementing quotas.
+
+### `btrfs device`
+These commands are used to manage the devices in a Btrfs filesystem.\
+Device management in Btrfs works on a mounted filesystem.
+The devices can be added, removed or replaced (for replacement `btrfs replace` is used).\
+These commands are especially useful if you want to add disks to your current filesystem.\
+Another really useful set of stats can be called with the `btrfs device stats <path/to/device>`:
+```
+btrfs device stats <device>
+[<device>].write_io_errs    0
+[<device>].read_io_errs     0
+[<device>].flush_io_errs    0
+[<device>].corruption_errs  0
+[<device>].generation_errs  0
+```
+`write_io_errs` records failed writes to the block device.
+These errors are rooted in layers beneath the filesystem not being able to satisfy the write request.\
+`read_io_errs` are the analogous errors for reads from the block device.\
+`flush_io_errs` are the number of failed writes with the *FLUSH* flag set.
+Flushing is a method of forcing a particular order between write requests, that is crucial for implementing crash consistency. In the case of btrfs, all metadata blocks **MUST** be permanently stored on the block device before the superblock is written.\
+`corruption_errs` show up if a block checksum is mismatched or a corrupted metadata header is found.\
+`generation_errs` occur when the block generateion does not match the expected value.
+
+These errors are kept in a persistent record.
+The current values are printed at mount time and updated during filesystem lifetime or from a scrub run.
+
+Other commands found under `btrfs device` are to `add`, `remove` and `delete` devices from the filesystem and/or arrays as well as to check whether all devices in a multiple device filesystem are `ready` to be mounted.
+
+### `btrfs scrub`
+These commands are used to scrub a mounted filesystem, ergo read all data and metadata, and verify their checksums as well as automatically repair corrupted blocks if a correct copy is available.\
+What scrub is **not** is a filesystem checker that verifys or repairs structural damage to the filesystem.
+
+Results from a scrub look like the following:
+```
+btrfs scrub start / && btrfs scrub status /
+UUID:             xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+Scrub started:    Fri Apr 30 12:18:53 2021
+Status:           finished
+Duration:         0:00:08
+Total to scrub:   25.62GiB
+Rate:             3.20GiB/s
+Error summary:    no errors found
+```
+
+### More `btrfs`-commands
+Other useful commands under `btrfs` are:
+- `btrfs send` and `btrfs receive` to send data between subvolume snapshots.
+- `btrfs balance` to spread block groups across devices
+- `btrfs check`, `btrfs restore` and `btrfs rescue` if things go south.
+---
+# What did I do? Part II - Configuration changes
+With all this background out of the way I have a basic understanding of the filesystem and the current layout of the disk I work on how I want it to be laid out for my use.
+I know that I want a separate subvolume for my VMs, that should be mounted separately.
+VMs (and databases for that matter) are single large files that have random changes occur in them, as described above CoW is not optimal for such use cases and should be disabled.
+
+So what do I do?
+
+At first I created a new subvolume for my folder for VMs.
+```
+btrfs subvolume create /path/to/VM
+```
+
+Then I realized that the fstab could be optimized slightly, as I can add the `ssd` option, as I know it's installed on an SSD. Additionally I used the `noatime` (to prevent frequent disk writes) and `space_cache` options.
