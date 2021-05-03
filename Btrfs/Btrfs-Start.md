@@ -267,14 +267,83 @@ Other useful commands under `btrfs` are:
 ---
 # What did I do? Part II - Configuration changes
 With all this background out of the way I have a basic understanding of the filesystem and the current layout of the disk I work on how I want it to be laid out for my use.
-I know that I want a separate subvolume for my VMs, that should be mounted separately.
-VMs (and databases for that matter) are single large files that have random changes occur in them, as described above CoW is not optimal for such use cases and should be disabled.
 
-So what do I do?
+## Folders and `fstab`
+For the most part the current layout works for me.
+What I do want to do is to add a folder to my home in which to store my VMs.
+As this is a folder for VMs I will disable the Copy on Write functionality as it is adviced not to use on large files with random writes.
 
-At first I created a new subvolume for my folder for VMs.
+To do this:
 ```
-btrfs subvolume create /path/to/VM
+mkdir VMs
+chattr +C VMs
+lsattr
+...
+---------------C---- ./VMs
+```
+Here `chattr +C` defines that the copy on write functionality of btrfs is not used for the contents of the folder.
+*Beware that this option only applies to files created in the directory after it is set, so best use is on empty directories.*
+
+I chose this solution as the btrfs-man-page advices that seperate mount options are not supported for different subvolumes in the same filesystem.
+Therefore creating a new subvolume and setting the `nodatacow` mount option is not an option.
+In addition setting the `nodatacow` mount option would also prevent compression, as `nodatacow` implies `nodatasum`.
+
+I then  realized that the fstab could be optimized slightly, as I can add the `ssd` option, as I know it's installed on an SSD.
+Another useful flag for installations on SSDs is the `discard`-flag, especially with `discard=async` (if supported), as this allows the TRIM to operate when a block is freed.
+Additionally I used the `noatime` (to prevent frequent disk writes) and `space_cache` (to improve performance when reading block group free space into memory) options.\
+The fstab looks something like this:
+```
+UUID=... / btrfs subvol=root,ssd,noatime,space_cache,discard=async,compress=zstd:1,x-systemd.device-timeout=0 0 
+```
+After changing the fstab it is advised to let grub know about the changes.
+For this we use:
+```
+grub2-mkconfig -o /boot/grub2/grub.cfg
+```
+*Note that since Fedora 34 the [grub configuration files are all in a unified location](https://fedoraproject.org/wiki/Changes/UnifyGrubConfig).*\
+If you are on another distribution check where and how to change the grub on your system.
+
+Reboot time.
+
+After the reboot check whether all the changes worked (e.g. via `cat /etc/fstab`).
+
+## Set up `btrfs scrub` to run regularly
+This is one of the big advantages of btrfs: data integrity checking.
+For this we use the `btrfs scrub`-command, but I don't want to always have to run it manually so I set up a SystemD-Service and -Timer to have it run regularly.\
+I used this excellent [blog-post](https://www.jwillikers.com/btrfs-scrub) as a starting-point.
+
+First off we want to create a systemd.service file.
+Here I will use an [instantiated service](https://www.freedesktop.org/software/systemd/man/systemd.service.html#Service%20Templates), just to try.
+This file will be created in the `/etc/systemd/system/` directory and will be named `btrfs-scrub@.service`.
+```
+[Unit]
+Description=btrfs-scrub on %f 
+ConditionPathIsMountPoint=%f
+RequiresMountsFor=%f
+
+[Service]
+Nice=19
+IOScedulingClass=idle
+KillSignal=SIGINT
+ExecStart=/usr/sbin/btrfs scrub start -B %f
 ```
 
-Then I realized that the fstab could be optimized slightly, as I can add the `ssd` option, as I know it's installed on an SSD. Additionally I used the `noatime` (to prevent frequent disk writes) and `space_cache` options.
+Then we need a timer unit that runs the service regularly.
+I decided to let it run once a week.
+```
+[Unit]
+Description=btrfs-scrub on %f once a week
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+When these files are created it is best to then run a `systemd-analyze verify <files>` .
+Then we `enable` the service via `systemctl start btrfs-scrub@-.service` and start the timer via `systemctl enable btrfs-scrub@-.timer`.
+The `-` in the files represents the `systemd-escape`d `/`.
+
+This concludes the basic btrfs-configuration that I undertook.
