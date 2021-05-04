@@ -1,3 +1,7 @@
+---
+title: "My foray into Btrfs"
+date: 2021-05-03
+---
 # My foray into Btrfs
 ## Why?
 Fedora uses it as default for its Workstation istall and I wanted to try it for a while as the snapshotting and bitrot-detection seemed interesting for me for a while.\
