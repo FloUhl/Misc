@@ -61,3 +61,6 @@ services:
       - 8443:8443
     restart: unless-stopped
 ```
+
+Then `systemctl enable docker` and `systemctl enable containerd`.
+
